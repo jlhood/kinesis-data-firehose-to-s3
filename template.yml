@@ -4,53 +4,156 @@ Transform: AWS::Serverless-2016-10-31
 Metadata:
   AWS::ServerlessRepo::Application:
     Name: kinesis-data-firehose-to-s3
-    Description: This serverless application... TODO
+    Description: This serverless application provides a Kinesis Data Firehose delivery stream pre-configured to write to an S3 bucket.
     Author: James Hood
-    # SPDX License Id, e.g., MIT, MIT-0, Apache-2.0. See https://spdx.org/licenses for more details
-    SpdxLicenseId: TODO
-    # paths are relative to .aws-sam/build directory
+    SpdxLicenseId: MIT
     LicenseUrl: ../../LICENSE
     ReadmeUrl: ../../README.md
-    Labels: [serverless]
+    Labels: [kinesis-firehose, s3]
     HomePageUrl: https://github.com/jlhood/kinesis-data-firehose-to-s3
-    # Update the semantic version and run sam publish to publish a new version of your app
-    SemanticVersion: 0.0.1
-    # best practice is to use git tags for each release and link to the version tag as your source code URL
-    SourceCodeUrl: https://github.com/jlhood/kinesis-data-firehose-to-s3/tree/0.0.1
+    SemanticVersion: 1.0.0
+    SourceCodeUrl: https://github.com/jlhood/kinesis-data-firehose-to-s3/tree/1.0.0
 
 Parameters:
-  LogLevel:
+  ExistingS3BucketArn:
     Type: String
-    Description: Log level for Lambda function logging, e.g., ERROR, INFO, DEBUG, etc
-    Default: INFO
+    Description: >
+      By default, the app creates an S3 bucket to store the logs. However, if this value is populated with a bucket ARN, that bucket will
+      be used instead. Use this if you have an existing S3 bucket or need to control more advanced configuration settings on your bucket.
+    Default: ''
+  KeyPrefix:
+    Type: String
+    Description: Prefix used for S3 files
+    Default: 'kinesis-data-firehose-to-s3/'
+  CompressionFormat:
+    Type: String
+    Description: Compression format for S3 files
+    AllowedValues:
+      - UNCOMPRESSED
+      - GZIP
+      - ZIP
+      - Snappy
+    Default: UNCOMPRESSED
+  BufferingIntervalInSeconds:
+    Description: >
+      Buffer incoming data for the specified period of time, in seconds, before delivering it to the destination.
+      See https://docs.aws.amazon.com/firehose/latest/APIReference/API_BufferingHints.html for details.
+    Type: Number
+    MinValue: 60
+    MaxValue: 900
+    Default: 300
+  BufferingSizeInMBs:
+    Description: >
+      Buffer incoming data to the specified size, in MBs, before delivering it to the destination. Note, if you specify a DataTransformationLambdaFunctionArn, you should
+      not set this higher than 6. See https://docs.aws.amazon.com/firehose/latest/dev/data-transformation.html for details.
+    Type: Number
+    MinValue: 1
+    MaxValue: 128
+    Default: 5
+  DataTransformationLambdaFunctionArn:
+    Description: >
+      ARN of data transformation Lambda function. This optional parameter allows you to configure a Lambda function to be invoked by
+      Kinesis Firehose to transformation incoming events before they are saved to S3. For example, you could use this to remove sensitive
+      data to meet compliance regulations.
+    Type: String
+    Default: ''
+
+Conditions:
+  DataTransformationEnabled:
+    !Not [!Equals [!Ref DataTransformationLambdaFunctionArn, '']]
+  CreateS3Bucket:
+    !Equals [!Ref ExistingS3BucketArn, '']
 
 Resources:
-  MyFunction:
-    Type: AWS::Serverless::Function
+  DeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
     Properties:
-      CodeUri: src/
-      Handler: myfunction.handler
-      Runtime: python3.7
-      Tracing: Active
-      Timeout: 60
-      Environment:
-        Variables:
-          LOG_LEVEL: !Ref LogLevel
-          TABLE_NAME: !Ref MyTable
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !If
+          - CreateS3Bucket
+          - !GetAtt Bucket.Arn
+          - !Ref ExistingS3BucketArn
+        RoleARN: !GetAtt DeliveryStreamRole.Arn
+        Prefix: !Ref KeyPrefix
+        BufferingHints:
+          IntervalInSeconds: !Ref BufferingIntervalInSeconds
+          SizeInMBs: !Ref BufferingSizeInMBs
+        CompressionFormat: !Ref CompressionFormat
+        ProcessingConfiguration: !If
+          - DataTransformationEnabled
+          - Enabled: true
+            Processors:
+              - Type: Lambda
+                Parameters:
+                  - ParameterName: LambdaArn
+                    ParameterValue: !Ref DataTransformationLambdaFunctionArn
+          - !Ref AWS::NoValue
 
-  MyTable:
-    Type: AWS::Serverless::SimpleTable
+  DeliveryStreamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - firehose.amazonaws.com
+            Action:
+            - sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Sub ${AWS::AccountId}
+      Policies:
+        - PolicyName: fh-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource: !If
+                  - CreateS3Bucket
+                  - - !GetAtt Bucket.Arn
+                    - !Sub ${Bucket.Arn}/*
+                  - - ExistingS3BucketArn
+                    - !Sub ${ExistingS3BucketArn}/*
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/*
+              - !If
+                  - DataTransformationEnabled
+                  - Effect: Allow
+                    Action:
+                      - lambda:InvokeFunction
+                    Resource:
+                      - !Ref DataTransformationLambdaFunctionArn
+                  - !Ref AWS::NoValue
+
+  Bucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateS3Bucket
 
 Outputs:
-  MyFunctionName:
-    Description: "Lambda Function Name"
-    Value: !Ref MyFunction
-  MyFunctionArn:
-    Description: "Lambda Function ARN"
-    Value: !GetAtt MyFunction.Arn
-  MyTableName:
-    Description: "Table Name"
-    Value: !Ref MyTable
-  MyTableArn:
-    Description: "Table ARN"
-    Value: !GetAtt MyTable.Arn
+  BucketName:
+    Description: Data bucket name
+    Condition: CreateS3Bucket
+    Value: !Ref Bucket
+  BucketArn:
+    Description: Data bucket ARN
+    Condition: CreateS3Bucket
+    Value: !GetAtt Bucket.Arn
+  DeliveryStreamName:
+    Description: "Kinesis Data Firehose delivery stream name"
+    Value: !Ref DeliveryStream
+  DeliveryStreamArn:
+    Description: "Kinesis Data Firehose delivery stream ARN"
+    Value: !GetAtt DeliveryStream.Arn

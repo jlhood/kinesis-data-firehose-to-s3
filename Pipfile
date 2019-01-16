@@ -5,19 +5,11 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-boto3 = "*"
-aws-xray-sdk = "*"
 
 [dev-packages]
-flake8 = "*"
-autopep8 = "*"
-pydocstyle = "*"
 cfn-lint = "*"
 aws-sam-cli = "*"
 awscli = "*"
-pytest = "*"
-pytest-mock = "*"
-pytest-cov = "*"
 
 [requires]
 python_version = "3.7"

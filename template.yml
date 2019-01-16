@@ -34,6 +34,13 @@ Parameters:
       - ZIP
       - Snappy
     Default: UNCOMPRESSED
+  EnableBucketEncryption:
+    Description: Set to true to enable server-side encryption on the S3 bucket using the default aws/s3 AWS KMS master key.
+    Type: String
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
   BufferingIntervalInSeconds:
     Description: >
       Buffer incoming data for the specified period of time, in seconds, before delivering it to the destination.
@@ -63,6 +70,8 @@ Conditions:
     !Not [!Equals [!Ref DataTransformationLambdaFunctionArn, '']]
   CreateS3Bucket:
     !Equals [!Ref ExistingS3BucketArn, '']
+  BucketEncryptionEnabled:
+    !Equals [!Ref EnableBucketEncryption, 'true']
 
 Resources:
   DeliveryStream:
@@ -141,6 +150,13 @@ Resources:
   Bucket:
     Type: AWS::S3::Bucket
     Condition: CreateS3Bucket
+    Properties:
+      BucketEncryption: !If
+        - BucketEncryptionEnabled
+        - ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: aws:kms
+        - !Ref AWS::NoValue
 
 Outputs:
   BucketName:
@@ -152,8 +168,8 @@ Outputs:
     Condition: CreateS3Bucket
     Value: !GetAtt Bucket.Arn
   DeliveryStreamName:
-    Description: "Kinesis Data Firehose delivery stream name"
+    Description: Kinesis Data Firehose delivery stream name
     Value: !Ref DeliveryStream
   DeliveryStreamArn:
-    Description: "Kinesis Data Firehose delivery stream ARN"
+    Description: Kinesis Data Firehose delivery stream ARN
     Value: !GetAtt DeliveryStream.Arn
